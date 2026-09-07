@@ -1,0 +1,28 @@
+{
+  "name": "@citrustiara/artifact-cache",
+  "version": "0.1.0",
+  "description": "Persistent, versioned caches for typed-array artifacts and local build pipelines.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "citrustiara",
+  "repository": { "type": "git", "url": "https://github.com/citrustiara/artifact-cache.git" },
+  "engines": { "node": ">=22" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./file": { "types": "./dist/backends/file.d.ts", "import": "./dist/backends/file.js" }
+  },
+  "files": ["dist", "README.md", "LICENSE", "NOTICE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "check": "npm run typecheck && npm test && npm run build",
+    "demo": "tsx examples/terrain.ts",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.6",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

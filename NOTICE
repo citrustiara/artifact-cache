@@ -1,0 +1,15 @@
+Artifact Cache
+Copyright 2026 citrustiara
+
+This library contains source extracted and adapted from RoadForge, authored by
+citrustiara and licensed under the Apache License, Version 2.0.
+
+src/rfpack.ts derives from RoadForge's core/rfpack.ts. The typed-array lifting,
+producer/version stamps, cache identities, non-blocking persistence, and
+byte-budgeted eviction design are adapted from its artifact codec and scene
+cache. Application-specific producers, renderer integration, and native IPC
+have been replaced with standalone interfaces and examples.
+
+The standalone modifications are also Copyright 2026 citrustiara and provided
+under Apache-2.0. No RoadForge application, assets, geographic datasets, or
+private repository history is included.
