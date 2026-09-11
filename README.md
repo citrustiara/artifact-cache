@@ -17,7 +17,7 @@ npm run demo
 npm run demo
 ```
 
-The first demo builds three synthetic terrain-processing stages. The second restores them from `.artifact-cache/`. Delete that directory to start fresh, or set `ARTIFACT_CACHE_DIR` to use another location. No external data is downloaded by the demo.
+Each demo runs three synthetic terrain-processing stages twice. The second pass changes only the `sun` lighting setting, so only `shade` rebuilds while `surface` and `summary` come from the cache. The first `npm run demo` builds the stages; the second restores all of them from `.artifact-cache/`. Delete that directory to start fresh, or set `ARTIFACT_CACHE_DIR` to use another location. No external data is downloaded by the demo.
 
 For use in another local project, run `npm run build` here, then `npm install /path/to/artifact-cache` there. The package exports compiled ESM and TypeScript declarations.
 
@@ -45,7 +45,7 @@ await cache.flush();
 
 The revision is your responsibility: it must identify every input affecting the computation. Increment the format version whenever the producer's output meaning or layout changes. Project and owner names are part of the identity, not filenames.
 
-`getOrCompute` reports whether the result came from persistent storage. Producer exceptions reject normally. Cache I/O, hashing, or decoding failures instead cause recomputation or a dropped write; observe them through `onError` and `stats()` if needed.
+`getOrCompute` reports whether the result came from persistent storage. Simultaneous calls with the same identity on one cache share one read or computation, including calls from separate pipelines. Each caller gets its own copy of the value, and callers sharing a fresh computation all report `cacheHit: false`. Producer exceptions reject normally; a shared failure rejects every waiting caller, and the next call tries again. Cache I/O, hashing, or decoding failures instead cause recomputation or a dropped write; observe them through `onError` and `stats()` if needed.
 
 Writes snapshot their data immediately and queue behind the computation. `flush()` waits for accepted writes, including key derivation. An artifact larger than the storage budget, or a write that would exceed the queued-byte cap, is not retained. It can still be returned by the producer. LRU eviction uses encoded payload size; filesystem overhead is not included.
 
@@ -56,9 +56,9 @@ import { ArtifactCache, MemoryBackend, Pipeline } from '@citrustiara/artifact-ca
 
 const cache = new ArtifactCache(new MemoryBackend());
 const pipeline = new Pipeline(cache, 'example', [
-  { id: 'scaled', version: 1, dependencies: [],
+  { id: 'scaled', version: 1, dependencies: [], inputKeys: ['samples', 'scale'],
     run: ({ samples, scale }) => Float32Array.from(samples as Float32Array, x => x * Number(scale)) },
-  { id: 'total', version: 1, dependencies: ['scaled'],
+  { id: 'total', version: 1, dependencies: ['scaled'], inputKeys: [],
     run: (_, upstream) => (upstream.scaled as Float32Array).reduce((sum, x) => sum + x, 0) },
 ]);
 
@@ -69,7 +69,9 @@ console.log(result.values.total); // 12
 
 A pipeline snapshots inputs at call time, checks the graph for missing dependencies and cycles, and runs stages in dependency order. Optional targets restrict execution: `pipeline.run(inputs, ['total'])`. Results include the dependency closure, a `built` list, and a `cacheHits` list. Producers receive isolated copies of inputs and dependency outputs; producer functions must be deterministic and use no hidden mutable state.
 
-Version 0.1 uses a conservative whole-build revision: any changed input or stage definition invalidates the pipeline's cached stages. It favors correctness over fine-grained reuse. It does not normalize object-property order or coalesce overlapping computations. Use explicit revisions with the lower-level cache when you already have a reliable per-artifact identity.
+`inputKeys` lists the top-level input fields a stage reads. Its `run` receives only those fields; missing fields stay absent, and `inputKeys: []` means no root inputs. A stage without `inputKeys` receives every root input, and all of them are part of its key. Duplicate or non-string names are rejected when the pipeline is created.
+
+Each stage key is built from the project, stage ID, version, declared input values, and the keys of its named dependencies, not their output values. A changed input or upstream version rebuilds the stages that depend on it, even if the upstream output stays the same. Unrelated stages stay cached, and adding a stage or changing registration order does not invalidate existing results. Objects with the same fields get the same key in any field order; array order and typed-array kind still count. Overlapping runs share work through the cache as described above.
 
 ## Data and storage boundaries
 

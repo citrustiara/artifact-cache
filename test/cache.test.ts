@@ -96,6 +96,81 @@ test('corrupt or wrong-version entries recompute, and producer exceptions propag
   assert.equal((await cache.getOrCompute(id('broken'), () => 7)).value, 7);
 });
 
+test('simultaneous getOrCompute calls share in-flight work and return isolated copies', async () => {
+  const cache = new ArtifactCache(new MemoryBackend());
+  let calls = 0;
+  const produce = async () => {
+    calls++;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return new Float32Array([10, 20]);
+  };
+
+  const [res1, res2, res3] = await Promise.all([
+    cache.getOrCompute(identity, produce),
+    cache.getOrCompute(identity, produce),
+    cache.getOrCompute(identity, produce),
+  ]);
+
+  assert.equal(calls, 1);
+  assert.equal(res1.cacheHit, false);
+  assert.equal(res2.cacheHit, false);
+  assert.equal(res3.cacheHit, false);
+  assert.deepEqual(res1.value, new Float32Array([10, 20]));
+  assert.deepEqual(res2.value, new Float32Array([10, 20]));
+
+  // Verify result isolation
+  res1.value[0] = 999;
+  assert.equal(res2.value[0], 10);
+  assert.equal(res3.value[0], 10);
+
+  // Different identity is not merged
+  let otherCalls = 0;
+  const otherIdentity = id('other-producer');
+  const [resA, resB] = await Promise.all([
+    cache.getOrCompute(identity, produce),
+    cache.getOrCompute(otherIdentity, async () => {
+      otherCalls++;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return 123;
+    }),
+  ]);
+  // `identity` was already cached, so it's a hit, and other identity computed fresh
+  assert.equal(resA.cacheHit, true);
+  assert.equal(resB.cacheHit, false);
+  assert.equal(resB.value, 123);
+  assert.equal(otherCalls, 1);
+});
+
+test('simultaneous getOrCompute calls propagate producer failure to all callers and allow subsequent retry', async () => {
+  const cache = new ArtifactCache(new MemoryBackend());
+  let failCalls = 0;
+  const failingProduce = async () => {
+    failCalls++;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    throw new Error('computation crashed');
+  };
+
+  const p1 = cache.getOrCompute(identity, failingProduce);
+  const p2 = cache.getOrCompute(identity, failingProduce);
+  const p3 = cache.getOrCompute(identity, failingProduce);
+
+  await assert.rejects(p1, /computation crashed/);
+  await assert.rejects(p2, /computation crashed/);
+  await assert.rejects(p3, /computation crashed/);
+  assert.equal(failCalls, 1);
+
+  // Subsequent call should retry and succeed
+  let retryCalls = 0;
+  const successProduce = async () => {
+    retryCalls++;
+    return 'recovered';
+  };
+  const result = await cache.getOrCompute(identity, successProduce);
+  assert.equal(result.value, 'recovered');
+  assert.equal(result.cacheHit, false);
+  assert.equal(retryCalls, 1);
+});
+
 test('oversized entries are not persisted, but computations still complete', async () => {
   const cache = new ArtifactCache(new MemoryBackend(), { budgetBytes: 0 });
   assert.equal((await cache.getOrCompute(identity, () => 9)).value, 9);

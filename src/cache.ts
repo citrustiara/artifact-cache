@@ -1,7 +1,7 @@
 // Copyright 2026 citrustiara. SPDX-License-Identifier: Apache-2.0
 // Adapted from RoadForge's scene cache: isolated instances and backend injection
 // replace application singletons and browser/native runtime detection.
-import { decodeArtifact, encodeArtifact } from './codec.js';
+import { decodeArtifact, encodeArtifact, snapshot } from './codec.js';
 import { cacheKey, type CacheIdentity } from './key.js';
 import type { EntryMeta, StorageBackend } from './backend.js';
 
@@ -42,6 +42,7 @@ export class ArtifactCache {
   private readonly index = new Map<string, EntryMeta>();
   private loaded = false;
   private tail: Promise<void> = Promise.resolve();
+  private readonly inFlight = new Map<string, Promise<CachedResult<unknown>>>();
   private readonly budgetBytes: number;
   private readonly maxQueuedBytes: number;
   private readonly now: () => number;
@@ -143,15 +144,38 @@ export class ArtifactCache {
     });
   }
 
-  /** Read or compute. Writes are queued, not awaited on the producer's path. */
+  /**
+   * Read or compute. Writes are queued, not awaited on the producer's path.
+   * Simultaneous calls with the same identity share one read or computation;
+   * each caller gets its own copy, and the entry is removed once it settles.
+   */
   async getOrCompute<T>(identity: CacheIdentity, produce: () => Promise<T> | T): Promise<CachedResult<T>> {
     const owned = copyIdentity(identity);
-    const cached = await this.get<T>(owned);
-    if (cached !== undefined) return { value: cached, cacheHit: true };
-    const value = await produce();
-    if (value === undefined) throw new TypeError('A producer must not return undefined');
-    void this.put(owned, value);
-    return { value, cacheHit: false };
+    // Share by storage key. Without a key, compute unshared; get() reports the error.
+    let inFlightKey: string | undefined;
+    try { inFlightKey = await cacheKey(owned); } catch { inFlightKey = undefined; }
+
+    let inFlightPromise = inFlightKey === undefined ? undefined : this.inFlight.get(inFlightKey) as Promise<CachedResult<T>> | undefined;
+    if (!inFlightPromise) {
+      const execute = async (): Promise<CachedResult<T>> => {
+        try {
+          const cached = await this.get<T>(owned);
+          if (cached !== undefined) return { value: cached, cacheHit: true };
+          const value = await produce();
+          if (value === undefined) throw new TypeError('A producer must not return undefined');
+          void this.put(owned, value);
+          return { value, cacheHit: false };
+        } finally {
+          if (inFlightKey !== undefined) this.inFlight.delete(inFlightKey);
+        }
+      };
+
+      inFlightPromise = execute();
+      if (inFlightKey !== undefined) this.inFlight.set(inFlightKey, inFlightPromise);
+    }
+
+    const result = await inFlightPromise;
+    return { value: snapshot(result.value), cacheHit: result.cacheHit };
   }
 
   /** Drains accepted writes, including key derivation, until the queue is stable. */
